@@ -9,7 +9,7 @@ if __name__ == "__main__":
         yolo_model_path='yolov8n.pt',
         similarity_threshold="max",  # valore numerico o max
         similarity_mode="net",  # net vs cosine
-        checkpoint="checkpoints/similarity_net_checkpoint.pth"
+        checkpoint="../checkpoints/similarity_net_checkpoint.pth"
     )
 
     image_path = "../data/Images/COCO_train2014_000000047502.jpg"

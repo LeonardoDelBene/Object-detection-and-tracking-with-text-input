@@ -95,8 +95,6 @@ def plot_embeddings_2d(img_emb_before, txt_emb_before,
 
 
 
-
-# ---------------- CLIP + YOLO Detector ----------------
 class CLIPYOLODetector:
     def __init__(self, yolo_model_path='yolov8n.pt',
                  clip_model_name="openai/clip-vit-large-patch14",
@@ -128,7 +126,6 @@ class CLIPYOLODetector:
         print(f"Models loaded successfully on {self.device}")
         print(f"Using {similarity_mode} similarity mode | Threshold: {self.similarity_threshold}")
 
-    # ---------------- YOLO Detection ----------------
     def yolo_detect(self, image):
         results = self.yolo_model(image, verbose=False)
         detections = []
@@ -148,7 +145,6 @@ class CLIPYOLODetector:
                     })
         return detections
 
-    # ---------------- CLIP Similarity ----------------
     def crop_detection(self, image, bbox):
         x1, y1, x2, y2 = bbox
         return image.crop((x1, y1, x2, y2))
@@ -163,15 +159,22 @@ class CLIPYOLODetector:
 
         with torch.no_grad():
             outputs = self.clip_model(**inputs)
-            image_embeds = outputs.image_embeds
-            text_embeds = outputs.text_embeds
+            image_embeds = outputs.image_embeds  # (1, D)
+            text_embeds = outputs.text_embeds  # (1, D)
+
             if self.similarity_mode == "cosine":
                 similarity = F.cosine_similarity(image_embeds, text_embeds, dim=-1)
+                img_emb = image_embeds
             else:
-                img_embd, txt_embd = self.sim_net(image_embeds,text_embeds)
-                #plot_embeddings_2d(image_embeds,text_embeds,img_embd,txt_embd)
-                similarity = F.cosine_similarity(img_embd, txt_embd, dim=-1)
-        return similarity.item()
+                img_emb, txt_emb = self.sim_net(image_embeds, text_embeds)
+                similarity = F.cosine_similarity(img_emb, txt_emb, dim=-1)
+
+        sim_value = similarity.item()  # float
+        img_emb = img_emb.squeeze(0)  # (D,)
+        #img_emb = F.normalize(img_emb, dim=0)  # 🔴 fondamentale
+        img_emb = img_emb.cpu().numpy().astype("float32")
+
+        return sim_value, img_emb
 
     def detect(self, image, text_query):
         if isinstance(image, str):
@@ -186,8 +189,9 @@ class CLIPYOLODetector:
 
         for i, det in enumerate(yolo_detections):
             cropped_img = self.crop_detection(image, det['bbox'])
-            similarity = self.calculate_clip_similarity(cropped_img, text_query)
+            similarity, img_emb = self.calculate_clip_similarity(cropped_img, text_query)
             det['similarity'] = similarity
+            det['embedding'] = img_emb
             all_detections.append(det)
             print(f"Detection {i + 1}: {det['class']} - YOLO conf: {det['confidence']:.3f}, CLIP similarity: {similarity:.3f}")
 

@@ -9,12 +9,22 @@ from deep_sort_realtime.deepsort_tracker import DeepSort
 
 
 class Tracking:
-    def __init__(self, detector, max_age=10, n_init=5):
+
+    def __init__(self, detector, max_age=10, n_init=5, use_reid=True):
         self.detector = detector
-        self.tracker = DeepSort(max_age=max_age, n_init=n_init, max_iou_distance=0.7)
+        self.use_reid = use_reid
+
+        # Quando use_reid=False, embedder=None significa che passeremo
+        # gli embeddings esterni tramite il parametro embeds di update_tracks
+        self.tracker = DeepSort(
+            max_age=max_age,
+            n_init=n_init,
+            max_iou_distance=0.7,
+            embedder="mobilenet" if use_reid else None,
+        )
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.predictions = defaultdict(list)
-
         self.metrics = {
             "num_tracks_total": 0,
             "num_tracks_active": 0,
@@ -81,6 +91,7 @@ class Tracking:
 
         for frame in self._load_frames(input_source):
             frame_count += 1
+            print("frame count:", frame_count)
             t0 = time.time()
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -88,19 +99,37 @@ class Tracking:
             detections = self.detector.detect(frame_pil, text_query)
 
             deep_sort_dets = []
+            embeds_list = []  # Lista per embeddings esterni
+
             for det in detections:
                 bbox = det.get("bbox", None)
                 conf = det.get("similarity", 1.0)
-                if bbox:
-                    x1, y1, x2, y2 = bbox
-                    w, h = x2 - x1, y2 - y1
-                    deep_sort_dets.append(([x1, y1, w, h], float(conf), None))
 
-            if deep_sort_dets:
+                if bbox is None:
+                    continue
+
+                x1, y1, x2, y2 = bbox
+                w, h = x2 - x1, y2 - y1
+
+                # CORREZIONE CRITICA: formato detection sempre uguale
+                # Gli embeddings si passano separatamente tramite embeds
+                deep_sort_dets.append(([x1, y1, w, h], float(conf), 'detection'))
+
+                if not self.use_reid:
+                    # Prepara embedding esterno
+                    embedding = det.get("embedding", None)
+                    if embedding is None:
+                        raise ValueError("use_reid=False ma embedding non fornito")
+
+                    embedding = np.asarray(embedding, dtype=np.float32)
+                    embedding /= np.linalg.norm(embedding) + 1e-6
+                    embeds_list.append(embedding)
+
+            # CORREZIONE: usa embeds parameter per embeddings esterni
+            if self.use_reid:
                 tracks = self.tracker.update_tracks(deep_sort_dets, frame=frame)
             else:
-                self.tracker.tracker.predict()
-                tracks = [t for t in self.tracker.tracker.tracks if t.is_confirmed()]
+                tracks = self.tracker.update_tracks(deep_sort_dets, embeds=embeds_list)
 
             # Salva predizioni in formato MOT
             for t in tracks:
@@ -140,7 +169,8 @@ class Tracking:
         avg_time = np.mean(self.metrics["frame_processing_times"])
         print(f"Video salvato: {output_path}")
         print(f"Predizioni MOT salvate: {pred_output}")
-        print(f"Frame totali: {total_frames}, Tracce totali: {self.metrics['num_tracks_total']}, Tempo medio/frame: {avg_time:.2f} ms")
+        print(
+            f"Frame totali: {total_frames}, Tracce totali: {self.metrics['num_tracks_total']}, Tempo medio/frame: {avg_time:.2f} ms")
 
         return pred_output
 
@@ -166,6 +196,8 @@ class Tracking:
             detections = self.detector.detect(frame_pil, text_query)
 
             deep_sort_dets = []
+            embeds_list = []
+
             for det in detections:
                 bbox = det.get("bbox", None)
                 sim = det.get("similarity", None)
@@ -173,10 +205,20 @@ class Tracking:
                 if bbox is not None:
                     x1, y1, x2, y2 = bbox
                     w, h = x2 - x1, y2 - y1
-                    deep_sort_dets.append(([x1, y1, w, h], float(sim), None))
+                    deep_sort_dets.append(([x1, y1, w, h], float(sim), 'detection'))
+
+                    if not self.use_reid:
+                        embedding = det.get("embedding", None)
+                        if embedding is not None:
+                            embedding = np.asarray(embedding, dtype=np.float32)
+                            embedding /= np.linalg.norm(embedding) + 1e-6
+                            embeds_list.append(embedding)
 
             if deep_sort_dets:
-                tracks = self.tracker.update_tracks(deep_sort_dets, frame=frame)
+                if self.use_reid:
+                    tracks = self.tracker.update_tracks(deep_sort_dets, frame=frame)
+                else:
+                    tracks = self.tracker.update_tracks(deep_sort_dets, embeds=embeds_list)
             else:
                 self.tracker.tracker.predict()
                 tracks = [t for t in self.tracker.tracker.tracks if t.is_confirmed()]
